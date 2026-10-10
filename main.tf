@@ -1,0 +1,253 @@
+data "aws_caller_identity" "current" {}
+
+# ---------- Default VPC ----------
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+resource "aws_security_group" "services" {
+  name        = "${var.project}-services"
+  description = "Allow inbound to the two demo services"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = var.upload_port
+    to_port     = var.upload_port
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = var.message_port
+    to_port     = var.message_port
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# ---------- ECR ----------
+resource "aws_ecr_repository" "upload" {
+  name                 = "${var.project}-upload"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_repository" "message" {
+  name                 = "${var.project}-message"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+# ---------- S3 + SQS ----------
+resource "aws_s3_bucket" "uploads" {
+  bucket        = "${var.project}-uploads-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_public_access_block" "uploads" {
+  bucket                  = aws_s3_bucket.uploads.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_sqs_queue" "messages" {
+  name                    = "${var.project}-messages"
+  sqs_managed_sse_enabled = true
+}
+
+# ---------- Logs ----------
+resource "aws_cloudwatch_log_group" "upload" {
+  name              = "/ecs/${var.project}-upload"
+  retention_in_days = 7
+}
+
+resource "aws_cloudwatch_log_group" "message" {
+  name              = "/ecs/${var.project}-message"
+  retention_in_days = 7
+}
+
+# ---------- IAM ----------
+data "aws_iam_policy_document" "ecs_tasks_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+# Execution role: pull images from ECR, write logs
+resource "aws_iam_role" "execution" {
+  name               = "${var.project}-task-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "execution" {
+  role       = aws_iam_role.execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Task role: upload service -> S3 PutObject only
+resource "aws_iam_role" "upload_task" {
+  name               = "${var.project}-upload-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+data "aws_iam_policy_document" "upload_task" {
+  statement {
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.uploads.arn}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "upload_task" {
+  name   = "s3-put"
+  role   = aws_iam_role.upload_task.id
+  policy = data.aws_iam_policy_document.upload_task.json
+}
+
+# Task role: message service -> SQS SendMessage only
+resource "aws_iam_role" "message_task" {
+  name               = "${var.project}-message-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+data "aws_iam_policy_document" "message_task" {
+  statement {
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.messages.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "message_task" {
+  name   = "sqs-send"
+  role   = aws_iam_role.message_task.id
+  policy = data.aws_iam_policy_document.message_task.json
+}
+
+# ---------- ECS ----------
+resource "aws_ecs_cluster" "main" {
+  name = "${var.project}-cluster"
+}
+
+resource "aws_ecs_task_definition" "upload" {
+  family                   = "${var.project}-upload"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.upload_task.arn
+
+  container_definitions = jsonencode([{
+    name         = "upload"
+    image        = "${aws_ecr_repository.upload.repository_url}:${var.image_tag}"
+    essential    = true
+    portMappings = [{ containerPort = var.upload_port, protocol = "tcp" }]
+    environment = [
+      { name = "BUCKET_NAME", value = aws_s3_bucket.uploads.bucket },
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "PORT", value = tostring(var.upload_port) },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.upload.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "upload"
+      }
+    }
+  }])
+}
+
+resource "aws_ecs_task_definition" "message" {
+  family                   = "${var.project}-message"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.message_task.arn
+
+  container_definitions = jsonencode([{
+    name         = "message"
+    image        = "${aws_ecr_repository.message.repository_url}:${var.image_tag}"
+    essential    = true
+    portMappings = [{ containerPort = var.message_port, protocol = "tcp" }]
+    environment = [
+      { name = "QUEUE_URL", value = aws_sqs_queue.messages.url },
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "PORT", value = tostring(var.message_port) },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.message.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "message"
+      }
+    }
+  }])
+}
+
+resource "aws_ecs_service" "upload" {
+  name            = "${var.project}-upload"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.upload.arn
+  desired_count   = var.desired_count
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = data.aws_subnets.default.ids
+    security_groups  = [aws_security_group.services.id]
+    assign_public_ip = true
+  }
+}
+
+resource "aws_ecs_service" "message" {
+  name            = "${var.project}-message"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.message.arn
+  desired_count   = var.desired_count
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = data.aws_subnets.default.ids
+    security_groups  = [aws_security_group.services.id]
+    assign_public_ip = true
+  }
+}

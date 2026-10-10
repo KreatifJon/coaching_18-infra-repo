@@ -1,0 +1,12 @@
+# Local Terraform working files
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+
+# Keep the dependency lock file committed
+!.terraform.lock.hcl
