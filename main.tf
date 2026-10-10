@@ -1,3 +1,4 @@
+
 data "aws_caller_identity" "current" {}
 
 # ---------- Default VPC ----------
@@ -12,12 +13,51 @@ data "aws_subnets" "default" {
   }
 }
 
+# ---------- KMS (shared key for ECR + CloudWatch Logs) ----------
+resource "aws_kms_key" "main" {
+  description         = "${var.project} encryption key"
+  enable_key_rotation = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AccountAdmin"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowCloudWatchLogs"
+        Effect    = "Allow"
+        Principal = { Service = "logs.${var.aws_region}.amazonaws.com" }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_kms_alias" "main" {
+  name          = "alias/${var.project}"
+  target_key_id = aws_kms_key.main.key_id
+}
+
+# ---------- Security group ----------
 resource "aws_security_group" "services" {
   name        = "${var.project}-services"
   description = "Allow inbound to the two demo services"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
+    description = "Upload service"
     from_port   = var.upload_port
     to_port     = var.upload_port
     protocol    = "tcp"
@@ -25,16 +65,19 @@ resource "aws_security_group" "services" {
   }
 
   ingress {
+    description = "Message service"
     from_port   = var.message_port
     to_port     = var.message_port
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # HTTPS only: ECR image pull, CloudWatch Logs, S3 and SQS are all reached over 443
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "HTTPS outbound to AWS service endpoints"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
@@ -42,21 +85,31 @@ resource "aws_security_group" "services" {
 # ---------- ECR ----------
 resource "aws_ecr_repository" "upload" {
   name                 = "${var.project}-upload"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
   }
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.main.arn
+  }
 }
 
 resource "aws_ecr_repository" "message" {
   name                 = "${var.project}-message"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.main.arn
   }
 }
 
@@ -91,12 +144,14 @@ resource "aws_sqs_queue" "messages" {
 # ---------- Logs ----------
 resource "aws_cloudwatch_log_group" "upload" {
   name              = "/ecs/${var.project}-upload"
-  retention_in_days = 7
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.main.arn
 }
 
 resource "aws_cloudwatch_log_group" "message" {
   name              = "/ecs/${var.project}-message"
-  retention_in_days = 7
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.main.arn
 }
 
 # ---------- IAM ----------
@@ -228,20 +283,6 @@ resource "aws_ecs_service" "upload" {
   name            = "${var.project}-upload"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.upload.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
-
-  network_configuration {
-    subnets          = data.aws_subnets.default.ids
-    security_groups  = [aws_security_group.services.id]
-    assign_public_ip = true
-  }
-}
-
-resource "aws_ecs_service" "message" {
-  name            = "${var.project}-message"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.message.arn
   desired_count   = var.desired_count
   launch_type     = "FARGATE"
 
