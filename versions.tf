@@ -12,7 +12,7 @@ terraform {
   # Remote state so CI/CD runners share state.
   backend "s3" {
     bucket       = "sctp-tfstate-ce13"
-    key          = "ecs-demo/terraform.tfstate"
+    key          = "plainjon/ecs-demo/terraform.tfstate"
     region       = "us-east-1"
     encrypt      = true
     use_lockfile = true

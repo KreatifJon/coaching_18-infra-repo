@@ -6,7 +6,7 @@ variable "aws_region" {
 
 variable "project" {
   type    = string
-  default = "ecs-demo"
+  default = "plainjon-ecs"
 }
 
 variable "image_tag" {
