@@ -114,6 +114,9 @@ resource "aws_ecr_repository" "message" {
 
 # ---------- S3 + SQS ----------
 resource "aws_s3_bucket" "uploads" {
+  #checkov:skip=CKV_AWS_144:Cross-region replication not needed for a demo bucket
+  #checkov:skip=CKV_AWS_18:Access logging needs a dedicated log bucket; out of scope for the demo
+  #checkov:skip=CKV2_AWS_62:No event consumer for this bucket
   bucket        = "${var.project}-uploads-${data.aws_caller_identity.current.account_id}"
   force_destroy = true
 }
@@ -130,7 +133,36 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
   bucket = aws_s3_bucket.uploads.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.main.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
+  bucket     = aws_s3_bucket.uploads.id
+  depends_on = [aws_s3_bucket_versioning.uploads]
+
+  rule {
+    id     = "cleanup"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
     }
   }
 }
@@ -186,6 +218,11 @@ data "aws_iam_policy_document" "upload_task" {
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.uploads.arn}/*"]
   }
+
+  statement {
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = [aws_kms_key.main.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "upload_task" {
@@ -216,6 +253,11 @@ resource "aws_iam_role_policy" "message_task" {
 # ---------- ECS ----------
 resource "aws_ecs_cluster" "main" {
   name = "${var.project}-cluster"
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
 }
 
 resource "aws_ecs_task_definition" "upload" {
@@ -279,6 +321,7 @@ resource "aws_ecs_task_definition" "message" {
 }
 
 resource "aws_ecs_service" "upload" {
+  #checkov:skip=CKV_AWS_333:Demo runs in the default VPC with no NAT; public IP is needed to pull images and receive traffic
   name            = "${var.project}-upload"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.upload.arn
@@ -293,6 +336,7 @@ resource "aws_ecs_service" "upload" {
 }
 
 resource "aws_ecs_service" "message" {
+  #checkov:skip=CKV_AWS_333:Demo runs in the default VPC with no NAT; public IP is needed to pull images and receive traffic
   name            = "${var.project}-message"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.message.arn
