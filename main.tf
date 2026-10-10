@@ -1,4 +1,3 @@
-
 data "aws_caller_identity" "current" {}
 
 # ---------- Default VPC ----------
@@ -283,6 +282,20 @@ resource "aws_ecs_service" "upload" {
   name            = "${var.project}-upload"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.upload.arn
+  desired_count   = var.desired_count
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = data.aws_subnets.default.ids
+    security_groups  = [aws_security_group.services.id]
+    assign_public_ip = true
+  }
+}
+
+resource "aws_ecs_service" "message" {
+  name            = "${var.project}-message"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.message.arn
   desired_count   = var.desired_count
   launch_type     = "FARGATE"
 
