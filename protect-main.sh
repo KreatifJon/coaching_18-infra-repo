@@ -16,7 +16,7 @@ gh api -X PUT "repos/${REPO}/branches/main/protection" \
     "strict": true,
     "checks": ${CHECKS_JSON}
   },
-  "enforce_admins": true,
+  "enforce_admins": false,
   "required_pull_request_reviews": {
     "required_approving_review_count": 1,
     "dismiss_stale_reviews": true

@@ -90,8 +90,9 @@ resource "aws_security_group" "services" {
 
 # ---------- ECR ----------
 resource "aws_ecr_repository" "upload" {
+  #checkov:skip=CKV_AWS_51:App pipeline redeploys the latest tag
   name                 = "${var.project}-upload"
-  image_tag_mutability = "IMMUTABLE"
+  image_tag_mutability = "MUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
@@ -105,8 +106,9 @@ resource "aws_ecr_repository" "upload" {
 }
 
 resource "aws_ecr_repository" "message" {
-  name                 = "${var.project}-message"
-  image_tag_mutability = "IMMUTABLE"
+  #checkov:skip=CKV_AWS_51:App pipeline redeploys the latest tag
+  name                 = "${var.project}-upload"
+  image_tag_mutability = "MUTABLE"
   force_delete         = true
 
   image_scanning_configuration {
