@@ -1,17 +1,24 @@
 data "aws_caller_identity" "current" {}
 
 # ---------- Default VPC ----------
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
+data "aws_vpc" "main" {
   filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
+    name   = "tag:Name"
+    values = ["sctp-vpc-ce13"]
   }
 }
 
+data "aws_subnets" "public" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.main.id]
+  }
+
+  filter {
+    name   = "tag:Name"
+    values = ["sctp-vpc-ce13-public-*"]
+  }
+}
 # ---------- KMS (shared key for ECR + CloudWatch Logs) ----------
 resource "aws_kms_key" "main" {
   description         = "${var.project} encryption key"
@@ -53,7 +60,7 @@ resource "aws_kms_alias" "main" {
 resource "aws_security_group" "services" {
   name        = "${var.project}-services"
   description = "Allow inbound to the two demo services"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = data.aws_vpc.main.id
 
   ingress {
     description = "Upload service"
@@ -329,7 +336,7 @@ resource "aws_ecs_service" "upload" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = data.aws_subnets.default.ids
+    subnets          = data.aws_subnets.public.ids
     security_groups  = [aws_security_group.services.id]
     assign_public_ip = true
   }
@@ -344,7 +351,7 @@ resource "aws_ecs_service" "message" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = data.aws_subnets.default.ids
+    subnets          = data.aws_subnets.public.ids
     security_groups  = [aws_security_group.services.id]
     assign_public_ip = true
   }
