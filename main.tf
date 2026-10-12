@@ -107,7 +107,7 @@ resource "aws_ecr_repository" "upload" {
 
 resource "aws_ecr_repository" "message" {
   #checkov:skip=CKV_AWS_51:App pipeline redeploys the latest tag
-  name                 = "${var.project}-upload"
+  name                 = "${var.project}-message"
   image_tag_mutability = "MUTABLE"
   force_delete         = true
 
