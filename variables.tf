@@ -22,10 +22,10 @@ variable "desired_count" {
 
 variable "upload_port" {
   type    = number
-  default = 5000
+  default = 5001
 }
 
 variable "message_port" {
   type    = number
-  default = 5001
+  default = 5002
 }
